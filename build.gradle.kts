@@ -19,7 +19,7 @@ plugins {
 }
 
 allprojects {
-    group = "in.dragonbra"
+    group = "io.github.utkarshdalal"
     version = "1.6.1-SNAPSHOT"
 }
 
@@ -159,9 +159,6 @@ publishing {
     publications {
         create<MavenPublication>("mavenJava") {
             from(components["java"])
-            groupId    = "io.github.utkarshdalal"   // <-- here
-            artifactId = "javasteam"
-            version    = "1.6.1-SNAPSHOT"
             artifact(javadocJar)
             pom {
                 name = "JavaSteam"
