@@ -166,12 +166,12 @@ publishing {
                 name = "JavaSteam"
                 packaging = "jar"
                 description = "Java library to interact with Valve's Steam network."
-                url = "https://github.com/Longi94/JavaSteam"
+                url = "https://github.com/utkarshdalal/JavaSteam"
                 inceptionYear = "2018"
                 scm {
-                    connection = "scm:git:git://github.com/Longi94/JavaSteam.git"
-                    developerConnection = "scm:git:ssh://github.com:Longi94/JavaSteam.git"
-                    url = "https://github.com/Longi94/JavaSteam/tree/master"
+                    connection = "scm:git:git://github.com/utkarshdalal/JavaSteam.git"
+                    developerConnection = "scm:git:ssh://github.com:utkarshdalal/JavaSteam.git"
+                    url = "https://github.com/Longi94/utkarshdalal/tree/master"
                 }
                 licenses {
                     license {
@@ -184,6 +184,18 @@ publishing {
                         id = "Longi"
                         name = "Long Tran"
                         email = "lngtrn94@gmail.com"
+                    }
+                }
+                repositories {
+                    maven {
+                        name = "GitHubPackages"
+                        url = uri("https://maven.pkg.github.com/utkarshdalal/JavaSteam")
+                        credentials {
+                            // literal string — this is GitHub’s requirement
+                            username = "x-access-token"
+                            // populated by GitHub Actions or your own env/gradle.properties
+                            password = System.getenv("GITHUB_TOKEN")
+                        }
                     }
                 }
             }
