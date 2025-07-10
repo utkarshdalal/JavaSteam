@@ -204,5 +204,9 @@ publishing {
 }
 
 signing {
-    sign(publishing.publications["mavenJava"])
+    isRequired = false           // disables every Sign task
 }
+
+//signing {
+//    sign(publishing.publications["mavenJava"])
+//}
