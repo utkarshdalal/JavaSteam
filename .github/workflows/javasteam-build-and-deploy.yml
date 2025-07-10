@@ -6,7 +6,7 @@
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
 # Artifacts: https://docs.github.com/en/actions/using-workflows/storing-workflow-data-as-artifacts
 
-name: Java Push CI/CD
+name: Maven Publish CI/CD
 
 on:
   workflow_dispatch:
@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
   packages: write
+
+env:                        # Central + GPG secrets (add these in repo → Settings → Secrets → Actions)
+  OSSRH_USERNAME:  ${{ secrets.OSSRH_USERNAME }}     # Central Portal access-key
+  OSSRH_PASSWORD:  ${{ secrets.OSSRH_PASSWORD }}     # Central Portal secret
+  GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}    # ASCII-armored private key
+  GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}     # pass-phrase (empty if none)
 
 jobs:
   build:
@@ -30,7 +36,7 @@ jobs:
         uses: gradle/actions/wrapper-validation@v4
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-      - name: Publish to GitHub Packages
-        run: ./gradlew publish -x signMavenJavaPublication
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clean & build
+        run: ./gradlew clean build -x test
+      - name: Publish SNAPSHOT to Sonatype
+        run: ./gradlew publishToSonatype -x test
