@@ -39,12 +39,12 @@ publishing {
                 name = "JavaSteam-tf"
                 packaging = "jar"
                 description = "TF classes for JavaSteam."
-                url = "https://github.com/Longi94/JavaSteam"
+                url = "https://github.com/utkarshdalal/JavaSteam"
                 inceptionYear = "2018"
                 scm {
-                    connection = "scm:git:git://github.com/Longi94/JavaSteam.git"
-                    developerConnection = "scm:git:ssh://github.com:Longi94/JavaSteam.git"
-                    url = "https://github.com/Longi94/JavaSteam/tree/master"
+                    connection = "scm:git:git://github.com/utkarshdalal/JavaSteam.git"
+                    developerConnection = "scm:git:ssh://github.com:utkarshdalal/JavaSteam.git"
+                    url = "https://github.com/utkarshdalal/JavaSteam/tree/master"
                 }
                 licenses {
                     license {
@@ -65,5 +65,9 @@ publishing {
 }
 
 signing {
+    useInMemoryPgpKeys(
+        providers.environmentVariable("GPG_PRIVATE_KEY").getOrNull(),
+        providers.environmentVariable("GPG_PASSPHRASE").orNull
+    )
     sign(publishing.publications["mavenJava"])
 }
