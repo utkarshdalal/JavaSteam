@@ -141,21 +141,19 @@ dependencies {
 }
 
 /* Artifact publishing */
-//nexusPublishing {
-//    // OSSRH reaches EOL on June 30, 2025
-//    // https://central.sonatype.org/publish/publish-portal-ossrh-staging-api/#configuration
-//    repositories {
-//        sonatype {
-//            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
-//            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
-//
-//            val ossrhUsername: String by project
-//            val ossrhPassword: String by project
-//            username = ossrhUsername
-//            password = ossrhPassword
-//        }
-//    }
-//}
+nexusPublishing {
+    // OSSRH reaches EOL on June 30, 2025
+    // https://central.sonatype.org/publish/publish-portal-ossrh-staging-api/#configuration
+    repositories {
+        sonatype {
+            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
+
+            username = System.getenv("OSSRH_USERNAME") ?: findProperty("ossrhUsername")?.toString()
+            password = System.getenv("OSSRH_PASSWORD") ?: findProperty("ossrhPassword")?.toString()
+        }
+    }
+}
 
 publishing {
     publications {
@@ -171,7 +169,7 @@ publishing {
                 scm {
                     connection = "scm:git:git://github.com/utkarshdalal/JavaSteam.git"
                     developerConnection = "scm:git:ssh://github.com:utkarshdalal/JavaSteam.git"
-                    url = "https://github.com/Longi94/utkarshdalal/tree/master"
+                    url = "https://github.com/utkarshdalal/JavaSteam/tree/master"
                 }
                 licenses {
                     license {
@@ -186,27 +184,15 @@ publishing {
                         email = "lngtrn94@gmail.com"
                     }
                 }
-                repositories {
-                    maven {
-                        name = "GitHubPackages"
-                        url = uri("https://maven.pkg.github.com/utkarshdalal/JavaSteam")
-                        credentials {
-                            // literal string — this is GitHub’s requirement
-                            username = "x-access-token"
-                            // populated by GitHub Actions or your own env/gradle.properties
-                            password = System.getenv("GITHUB_TOKEN")
-                        }
-                    }
-                }
             }
         }
     }
 }
 
 signing {
-    isRequired = false           // disables every Sign task
+    useInMemoryPgpKeys(
+        providers.environmentVariable("GPG_PRIVATE_KEY").getOrNull(),
+        providers.environmentVariable("GPG_PASSPHRASE").orNull
+    )
+    sign(publishing.publications["mavenJava"])
 }
-
-//signing {
-//    sign(publishing.publications["mavenJava"])
-//}
