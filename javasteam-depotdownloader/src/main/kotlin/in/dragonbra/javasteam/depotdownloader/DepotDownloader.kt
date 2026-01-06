@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flatMapMerge
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -1598,13 +1599,16 @@ class DepotDownloader @JvmOverloads constructor(
         return false
     }
 
-    private suspend fun finishDepotDownload(mainAppId: Int) {
-        val appItem = processingItemsMap[mainAppId]
+    private fun finishDepotDownload(appId: Int) {
+        val appItem = processingItemsMap[appId]
         if (appItem != null) {
             notifyListeners { it.onDownloadCompleted(appItem) }
+            processingItemsMap.remove(appId)
         }
 
-        completionFuture.complete(null)
+        if (processingItemsMap.isEmpty()) {
+            completionFuture.complete(null)
+        }
     }
 
     // endregion
@@ -1691,7 +1695,7 @@ class DepotDownloader @JvmOverloads constructor(
             createChunkProcessingFlow().collect()
         }
 
-        for (item in processingChannel) {
+        processingChannel.receiveAsFlow().collect { item ->
             try {
                 ensureActive()
 
@@ -1723,7 +1727,7 @@ class DepotDownloader @JvmOverloads constructor(
 
                         if (!config.betaPassword.isNullOrBlank() && branch.isBlank()) {
                             logger?.error("Error: Cannot specify 'branchpassword' when 'branch' is not specified.")
-                            continue
+                            return@collect
                         }
 
                         config = config.copy(downloadAllPlatforms = item.downloadAllPlatforms)
@@ -1731,7 +1735,7 @@ class DepotDownloader @JvmOverloads constructor(
 
                         if (config.downloadAllPlatforms && !os.isNullOrBlank()) {
                             logger?.error("Error: Cannot specify `os` when `all-platforms` is specified.")
-                            continue
+                            return@collect
                         }
 
                         config = config.copy(downloadAllArchs = item.downloadAllArchs)
@@ -1739,7 +1743,7 @@ class DepotDownloader @JvmOverloads constructor(
 
                         if (config.downloadAllArchs && !arch.isNullOrBlank()) {
                             logger?.error("Error: Cannot specify `osarch` when `all-archs` is specified.")
-                            continue
+                            return@collect
                         }
 
                         config = config.copy(downloadAllLanguages = item.downloadAllLanguages)
@@ -1747,7 +1751,7 @@ class DepotDownloader @JvmOverloads constructor(
 
                         if (config.downloadAllLanguages && !language.isNullOrBlank()) {
                             logger?.error("Error: Cannot specify `language` when `all-languages` is specified.")
-                            continue
+                            return@collect
                         }
 
                         val depotManifestIds = mutableListOf<Pair<Int, Long>>()
@@ -1757,7 +1761,7 @@ class DepotDownloader @JvmOverloads constructor(
                         if (manifestIdList.isNotEmpty()) {
                             if (depotIdList.size != manifestIdList.size) {
                                 logger?.error("Error: `manifest` requires one id for every `depot` specified")
-                                continue
+                                return@collect
                             }
                             depotManifestIds.addAll(depotIdList.zip(manifestIdList))
                         } else {
@@ -1766,16 +1770,24 @@ class DepotDownloader @JvmOverloads constructor(
 
                         logger?.debug("Downloading App for ${item.appId}")
                         notifyListeners { it.onDownloadStarted(item) }
-                        downloadApp(
-                            appId = item.appId,
-                            depotManifestIds = depotManifestIds,
-                            branch = branch,
-                            os = os,
-                            arch = arch,
-                            language = language,
-                            lv = item.lowViolence,
-                            isUgc = false,
-                        )
+
+                        scope.launch {
+                            try {
+                                downloadApp(
+                                    appId = item.appId,
+                                    depotManifestIds = depotManifestIds,
+                                    branch = branch,
+                                    os = os,
+                                    arch = arch,
+                                    language = language,
+                                    lv = item.lowViolence,
+                                    isUgc = false,
+                                )
+                            } catch (e: Exception) {
+                                logger?.error("Error downloading app ${item.appId}: ${e.message}", e)
+                                notifyListeners { it.onDownloadFailed(item, e) }
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
