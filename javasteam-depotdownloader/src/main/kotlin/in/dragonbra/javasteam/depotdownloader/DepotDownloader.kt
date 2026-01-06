@@ -105,6 +105,7 @@ import kotlin.text.toLongOrNull
  * @param maxFileWrites Number of concurrent files being written. Default: 1
  * @param androidEmulation Forces "Windows" as the default OS filter. Used when running Android games in PC emulators that expect Windows builds.
  * @param parentJob Parent job for the downloader. If provided, the downloader will be cancelled when the parent job is cancelled.
+ * @param autoStartDownload Whether to start downloading automatically. If false, you must call [startDownloading] manually.
  *
  * @author Oxters
  * @author Lossy
@@ -122,6 +123,7 @@ class DepotDownloader @JvmOverloads constructor(
     private var maxFileWrites: Int = 1,
     private val androidEmulation: Boolean = false,
     private val parentJob: Job? = null,
+    private val autoStartDownload: Boolean = true,
 ) : Closeable {
 
     companion object {
@@ -243,6 +245,12 @@ class DepotDownloader @JvmOverloads constructor(
             }
         }
 
+        if (autoStartDownload) {
+            startDownloading()
+        }
+    }
+
+    fun startDownloading() {
         // Launch the processing loop
         scope.launch {
             processItems()
