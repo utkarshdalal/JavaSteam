@@ -109,8 +109,19 @@ publishing {
             }
         }
     }
+
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/joshuatam/JavaSteam")
+            credentials {
+                username = project.findProperty("ossrhUsername") as String? ?: System.getenv("GITHUB_ACTOR")
+                password = project.findProperty("ossrhPassword") as String? ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
 }
 
-signing {
-    sign(publishing.publications["mavenJava"])
-}
+//signing {
+//    sign(publishing.publications["mavenJava"])
+//}

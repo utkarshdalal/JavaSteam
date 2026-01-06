@@ -30,7 +30,7 @@ object VZstdUtil {
 
         if (crc32 == crc32Footer) {
             // They write CRC32 twice?
-            logger.debug("CRC32 appears to be written twice in the data")
+            // logger.debug("CRC32 appears to be written twice in the data")
         }
 
         if (buffer[buffer.size - 3] != 'z'.code.toByte() ||

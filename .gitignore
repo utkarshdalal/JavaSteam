@@ -85,3 +85,5 @@ refreshtoken.txt
 
 # MacOS
 .DS_Store
+
+local.properties
