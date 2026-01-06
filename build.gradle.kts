@@ -6,10 +6,16 @@ import org.jmailen.gradle.kotlinter.tasks.LintTask
 import java.util.Properties
 
 // Load local.properties if it exists
-val localProperties = Properties().apply {
-    val localPropsFile = rootProject.file("local.properties")
-    if (localPropsFile.exists()) {
-        load(localPropsFile.inputStream())
+val localProperties = Properties()
+val localPropertiesFile: File = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.inputStream().use {
+        localProperties.load(it)
+    }
+
+    // Load local.properties into project properties
+    localProperties.forEach { key, value ->
+        extra.set(key.toString(), value)
     }
 }
 
