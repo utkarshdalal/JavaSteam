@@ -1387,6 +1387,32 @@ class DepotDownloader @JvmOverloads constructor(
                     }
                 }
             } else {
+                // Calculate actual file hash from filesystem
+                val actualFileHash = if (fileFinalPath.toFile().exists()) {
+                    Util.fileSHAHash(fileFinalPath)
+                } else {
+                    byteArrayOf()
+                }
+
+                val hashMatches = file.fileHash.contentEquals(actualFileHash)
+                if (hashMatches) {
+                    logger?.debug("File $fileFinalPath already exists and matches hash, skipping download")
+
+                    synchronized(depotDownloadCounter) {
+                        depotDownloadCounter.sizeDownloaded += file.totalSize
+
+                        val percentage =
+                            (depotDownloadCounter.sizeDownloaded / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
+                        logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
+                    }
+
+                    synchronized(downloadCounter) {
+                        downloadCounter.completeDownloadSize -= file.totalSize
+                    }
+
+                    return@withContext
+                }
+
                 // No old manifest or file not in old manifest. We must validate.
                 val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
                 if (fileSize.toULong() != file.totalSize.toULong()) {
