@@ -49,6 +49,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.collect
@@ -78,6 +79,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.collections.mutableListOf
 import kotlin.collections.set
 import kotlin.text.toLongOrNull
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Downloads games, workshop items, and other Steam content via depot manifests.
@@ -575,10 +577,17 @@ class DepotDownloader @JvmOverloads constructor(
 
         val infos = mutableListOf<DepotDownloadInfo>()
 
-        depotManifestIds.forEach { (depotId, manifestId) ->
-            val info = getDepotInfo(depotId, appId, manifestId, branch)
-            if (info != null) {
-                infos.add(info)
+        depotManifestIds.chunked(5).forEachIndexed { chunkIndex, chunk ->
+            chunk.forEach { (depotId, manifestId) ->
+                val info = getDepotInfo(depotId, appId, manifestId, branch)
+                if (info != null) {
+                    infos.add(info)
+                }
+            }
+
+            if (chunkIndex > 0) {
+                // Add delay 500ms
+                delay(500.milliseconds)
             }
         }
 
@@ -1827,6 +1836,9 @@ class DepotDownloader @JvmOverloads constructor(
         // Throw the cancellation exception if requested so that this task is marked failed
         ensureActive()
 
+        val chunkID = Strings.toHex(item.chunk.chunkID)
+        logger?.debug("Decompressing file ${item.file.fileName} chunk $chunkID (${item.chunk.compressedLength} bytes, ${item.chunk.uncompressedLength} bytes)")
+
         val depot = item.depot
         val depotKey = depot.depotKey
         val downloaded = item.downloaded
@@ -1856,6 +1868,9 @@ class DepotDownloader @JvmOverloads constructor(
     private suspend fun processFileWrites(item: FileWriteItem): Unit = withContext(Dispatchers.IO) {
         // Throw the cancellation exception if requested so that this task is marked failed
         ensureActive()
+
+        val chunkID = Strings.toHex(item.chunk.chunkID)
+        logger?.debug("Writing file ${item.file.fileName} chunk $chunkID (${item.chunk.uncompressedLength} bytes)")
 
         val depot = item.depot
         val depotDownloadCounter = item.depotDownloadCounter
