@@ -20,5 +20,6 @@ import java.util.concurrent.atomic.AtomicInteger
 data class FileStreamData(
     var fileHandle: FileHandle?,
     val fileLock: Mutex = Mutex(),
+    val chunksDownloaded: AtomicInteger = AtomicInteger(0),
     var chunksToDownload: AtomicInteger = AtomicInteger(0),
 )

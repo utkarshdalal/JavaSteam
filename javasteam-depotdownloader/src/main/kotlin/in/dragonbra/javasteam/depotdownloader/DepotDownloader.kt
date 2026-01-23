@@ -105,7 +105,6 @@ import kotlin.time.Duration.Companion.milliseconds
  * @param useLanCache Attempts to detect and use local Steam cache servers (e.g., LANCache) for faster downloads on local networks
  * @param maxDownloads Number of concurrent chunk downloads. Automatically increased to 25 when a LAN cache is detected. Default: 8
  * @param maxDecompress Number of concurrent chunk decompress. Default: 8
- * @param maxFileWrites Number of concurrent files being written. Default: 1
  * @param androidEmulation Forces "Windows" as the default OS filter. Used when running Android games in PC emulators that expect Windows builds.
  * @param parentJob Parent job for the downloader. If provided, the downloader will be cancelled when the parent job is cancelled.
  * @param autoStartDownload Whether to start downloading automatically. If false, you must call [startDownloading] manually.
@@ -123,7 +122,6 @@ class DepotDownloader @JvmOverloads constructor(
     private val useLanCache: Boolean = false,
     private var maxDownloads: Int = 8,
     private var maxDecompress: Int = 8,
-    private var maxFileWrites: Int = 1,
     private val androidEmulation: Boolean = false,
     private val parentJob: Job? = null,
     private val autoStartDownload: Boolean = true,
@@ -171,10 +169,12 @@ class DepotDownloader @JvmOverloads constructor(
     private var processingChannel = Channel<DownloadItem>(Channel.UNLIMITED)
 
     private val networkChunkFlow = MutableSharedFlow<NetworkChunkItem>(extraBufferCapacity = Int.MAX_VALUE)
+    private val decompressFlow = MutableSharedFlow<DecompressItem>(extraBufferCapacity = Int.MAX_VALUE)
 
     private val pendingChunks = AtomicInteger(0)
 
     private var chunkProcessingJob: Job? = null
+    private var decompressJob: Job? = null
 
     private var steam3: Steam3Session? = null
 
@@ -189,28 +189,17 @@ class DepotDownloader @JvmOverloads constructor(
         val fileData: FileData,
         val chunk: ChunkData,
         val totalChunksForFile: Int,
+        val fileId: String, // Unique identifier for the file
     )
 
     private data class DecompressItem(
         val depot: DepotDownloadInfo,
         val depotDownloadCounter: DepotDownloadCounter,
         val downloadCounter: GlobalDownloadCounter,
-        val downloaded: Int,
         val file: FileData,
         val fileStreamData: FileStreamData,
         val chunk: ChunkData,
-        val chunkBuffer: ByteArray,
-    )
-
-    private data class FileWriteItem(
-        val depot: DepotDownloadInfo,
-        val depotDownloadCounter: DepotDownloadCounter,
-        val downloadCounter: GlobalDownloadCounter,
-        val file: FileData,
-        val fileStreamData: FileStreamData,
-        val chunk: ChunkData,
-        val decompressed: Int,
-        val decompressedBuffer: ByteArray,
+        val fileId: String,
     )
 
     private data class DirectoryResult(val success: Boolean, val installDir: Path?)
@@ -261,47 +250,34 @@ class DepotDownloader @JvmOverloads constructor(
     }
 
     private fun createChunkProcessingFlow(): kotlinx.coroutines.flow.Flow<Unit> = networkChunkFlow
-        .flatMapMerge<NetworkChunkItem, DecompressItem>(concurrency = maxDownloads) { item ->
-            flow<DecompressItem> {
+        .flatMapMerge<NetworkChunkItem, Unit>(concurrency = maxDownloads) { item ->
+            flow<Unit> {
                 try {
-                    val result = downloadSteam3DepotFileChunk(
+                    downloadSteam3DepotFileChunk(
                         downloadCounter = item.downloadCounter,
                         depotFilesData = item.depotFilesData,
                         file = item.fileData,
                         fileStreamData = item.fileStreamData,
-                        chunk = item.chunk
+                        chunk = item.chunk,
+                        fileId = item.fileId
                     )
-                    if (result != null) {
-                        emit(result)
-                    }
+                    emit(Unit)
                 } catch (e: Exception) {
                     logger?.error("Error downloading chunk: ${e.message}", e)
                 }
             }.flowOn(Dispatchers.IO)
         }
-        .flatMapMerge<DecompressItem, FileWriteItem>(concurrency = maxDecompress) { item ->
-            flow<FileWriteItem> {
-                try {
-                    val result = processFileDecompress(item)
-                    if (result != null) {
-                        emit(result)
-                    }
-                } catch (e: Exception) {
-                    logger?.error("Error decompressing chunk: ${e.message}", e)
-                }
-            }.flowOn(Dispatchers.Default)
-        }
-        .flatMapMerge<FileWriteItem, Unit>(concurrency = maxFileWrites) { item ->
+
+    private fun createDecompressFlow(): kotlinx.coroutines.flow.Flow<Unit> = decompressFlow
+        .flatMapMerge<DecompressItem, Unit>(concurrency = maxDecompress) { item ->
             flow<Unit> {
                 try {
-                    processFileWrites(item)
-                    pendingChunks.decrementAndGet()
+                    processFileDecompress(item)
                     emit(Unit)
                 } catch (e: Exception) {
-                    logger?.error("Error writing file: ${e.message}", e)
-                    pendingChunks.decrementAndGet()
+                    logger?.error("Error decompressing file: ${e.message}", e)
                 }
-            }.flowOn(Dispatchers.IO)
+            }.flowOn(Dispatchers.Default)
         }
 
     // region [REGION] Downloading Operations
@@ -966,6 +942,8 @@ class DepotDownloader @JvmOverloads constructor(
             "Total downloaded: ${downloadCounter.totalBytesCompressed} bytes " +
                 "(${downloadCounter.totalBytesUncompressed} bytes uncompressed) from ${depots.size} depots"
         )
+
+        finishDepotDownload(mainAppId)
     }
 
     private suspend fun processDepotManifestAndFiles(
@@ -1205,15 +1183,19 @@ class DepotDownloader @JvmOverloads constructor(
 
                 // Wait for all pending chunks to complete processing
                 while (pendingChunks.get() > 0) {
-                    kotlinx.coroutines.delay(100)
+                    logger?.debug("Pending chunks: ${pendingChunks.get()}")
+                    kotlinx.coroutines.delay(1000)
                 }
 
-                logger?.debug("All chunks completed, canceling processing job for depot ${depot.depotId}")
+                logger?.debug("All chunks completed, canceling processing jobs for depot ${depot.depotId}")
 
-                // Cancel the continuous flow job since no more chunks will be added
+                // Cancel the download flow jobs since no more chunks will be added
                 chunkProcessingJob?.cancel()
 
-                logger?.debug("Canceled chunk processing job for depot ${depot.depotId}")
+                // Cancel the decompress flow jobs since no more files will be added
+                decompressJob?.cancel()
+
+                logger?.debug("Canceled chunk processing and decompression jobs for depot ${depot.depotId}")
             }
         }
 
@@ -1258,10 +1240,6 @@ class DepotDownloader @JvmOverloads constructor(
         }
 
         logger?.debug("Depot ${depot.depotId} - Downloaded ${depotCounter.depotBytesCompressed} bytes (${depotCounter.depotBytesUncompressed} bytes uncompressed)")
-
-        if (isLastDepot) {
-            finishDepotDownload(mainAppId)
-        }
     }
 
     private suspend fun downloadSteam3DepotFile(
@@ -1489,11 +1467,25 @@ class DepotDownloader @JvmOverloads constructor(
         val fileStreamData = FileStreamData(
             fileHandle = null,
             fileLock = Mutex(),
+            chunksDownloaded = AtomicInteger(0),
             chunksToDownload = AtomicInteger(neededChunks!!.size)
         )
 
+        // Create a unique file ID for tracking using absolute path
+        val fileId = fileFinalPath.toFile().absolutePath // Get absolute path of final file
+            .replace(depot.installDir.toFile().absolutePath, "") // Remove depot install dir prefix
+            .trimStart('/') // Remove leading slash
+            .replace("\\", "/") // Replace backslashes with forward slashes
+            .replace(".", "_") // Replace dots with underscores
+            .replace(" ", "_") // Replace spaces with underscores
+
+        logger?.debug("File ID: $fileId, path: ${fileFinalPath.toFile().absolutePath}")
+
         neededChunks!!.forEach { chunk ->
+            // Increment the pending chunks counter
             pendingChunks.incrementAndGet()
+
+            // Emit the chunk to the network chunk flow
             networkChunkFlow.tryEmit(
                 NetworkChunkItem(
                     downloadCounter = downloadCounter,
@@ -1502,6 +1494,7 @@ class DepotDownloader @JvmOverloads constructor(
                     fileData = file,
                     chunk = chunk,
                     totalChunksForFile = neededChunks!!.size,
+                    fileId = fileId,
                 )
             )
         }
@@ -1513,7 +1506,8 @@ class DepotDownloader @JvmOverloads constructor(
         file: FileData,
         fileStreamData: FileStreamData,
         chunk: ChunkData,
-    ): DecompressItem? = withContext(Dispatchers.IO) {
+        fileId: String,
+    ) = withContext(Dispatchers.IO) {
         ensureActive()
 
         val depot = depotFilesData.depotDownloadInfo
@@ -1594,24 +1588,38 @@ class DepotDownloader @JvmOverloads constructor(
         } while (downloaded == 0)
 
         if (downloaded == 0) {
-            logger?.error("Failed to find any server with chunk ${chunk.chunkID} for depot ${depot.depotId}. Aborting.")
+            logger?.error("Failed to find any server with chunk $chunkID for depot ${depot.depotId}. Aborting.")
             cancel()
         }
 
         // Throw the cancellation exception if requested so that this task is marked failed
         ensureActive()
 
-        // Return the decompress item for the next stage in the pipeline
-        return@withContext DecompressItem(
+        // Create temporary file path for this chunk
+        val chunkTempDir = depot.installDir / STAGING_DIR / "chunks" / fileId
+        filesystem.createDirectories(chunkTempDir)
+        val chunkTempPath = chunkTempDir / "${chunk.offset}_$chunkID.chunk"
+
+        // Save the uncompressed chunk data to temporary file
+        filesystem.sink(chunkTempPath).buffer().use { sink ->
+            sink.write(chunkBuffer, 0, downloaded)
+        }
+
+        logger?.debug("Saved uncompressed chunk $chunkID to $chunkTempPath")
+
+        // Return the chunk download item for the next stage in the pipeline
+        val decompressItem = DecompressItem(
             depot = depot,
             depotDownloadCounter = depotDownloadCounter,
             downloadCounter = downloadCounter,
-            downloaded = downloaded,
             file = file,
             fileStreamData = fileStreamData,
             chunk = chunk,
-            chunkBuffer = chunkBuffer,
+            fileId = fileId,
         )
+
+        // Emit to decompression flow
+        decompressFlow.tryEmit(decompressItem)
     }
 
     private fun testIsFileIncluded(filename: String): Boolean {
@@ -1730,6 +1738,11 @@ class DepotDownloader @JvmOverloads constructor(
             createChunkProcessingFlow().collect()
         }
 
+        // Launch the decompression pipeline using Flow
+        decompressJob = scope.launch {
+            createDecompressFlow().collect()
+        }
+
         processingChannel.receiveAsFlow().collect { item ->
             try {
                 ensureActive()
@@ -1832,128 +1845,113 @@ class DepotDownloader @JvmOverloads constructor(
         }
     }
 
-    private suspend fun processFileDecompress(item: DecompressItem): FileWriteItem? = withContext(Dispatchers.Default) {
+    private suspend fun processFileDecompress(item: DecompressItem) = withContext(Dispatchers.IO) {
         // Throw the cancellation exception if requested so that this task is marked failed
         ensureActive()
 
         val chunkID = Strings.toHex(item.chunk.chunkID)
-        logger?.debug("Decompressing file ${item.file.fileName} chunk $chunkID (${item.chunk.compressedLength} bytes, ${item.chunk.uncompressedLength} bytes)")
+        logger?.debug("Decompressing and writing file ${item.file.fileName} with ${item.fileStreamData.chunksToDownload} chunks")
 
         val depot = item.depot
         val depotKey = depot.depotKey
-        val downloaded = item.downloaded
-        val chunk = item.chunk
-        val chunkBuffer = item.chunkBuffer
-
-        var written = downloaded
-        var decompressedBuffer = chunkBuffer
-
-        if (depotKey != null) {
-            decompressedBuffer = ByteArray(chunk.uncompressedLength)
-            written = DepotChunk.process(chunk, chunkBuffer, decompressedBuffer, depotKey)
-        }
-
-        return@withContext FileWriteItem(
-            depot = depot,
-            depotDownloadCounter = item.depotDownloadCounter,
-            downloadCounter = item.downloadCounter,
-            file = item.file,
-            fileStreamData = item.fileStreamData,
-            chunk = chunk,
-            decompressed = written,
-            decompressedBuffer = decompressedBuffer,
-        )
-    }
-
-    private suspend fun processFileWrites(item: FileWriteItem): Unit = withContext(Dispatchers.IO) {
-        // Throw the cancellation exception if requested so that this task is marked failed
-        ensureActive()
-
-        val chunkID = Strings.toHex(item.chunk.chunkID)
-        logger?.debug("Writing file ${item.file.fileName} chunk $chunkID (${item.chunk.uncompressedLength} bytes)")
-
-        val depot = item.depot
         val depotDownloadCounter = item.depotDownloadCounter
         val downloadCounter = item.downloadCounter
+
         val file = item.file
-        val fileStreamData = item.fileStreamData
+        val fileFinalPath = depot.installDir / file.fileName
         val chunk = item.chunk
-        val written = item.decompressed
-        val decompressedBuffer = item.decompressedBuffer
+        val chunkTempDir = depot.installDir / STAGING_DIR / "chunks" / item.fileId
+
+        val writeOffset = file.chunks.filter { it.offset < chunk.offset }.sumOf { it.uncompressedLength.toLong() }
 
         try {
-            fileStreamData.fileLock.lock()
+            logger?.debug("Processing chunk $chunkID for file ${file.fileName}")
 
-            if (fileStreamData.fileHandle == null) {
-                val fileFinalPath = depot.installDir / file.fileName
-                fileStreamData.fileHandle = filesystem.openReadWrite(fileFinalPath)
+            val chunkTempPath = chunkTempDir / "${chunk.offset}_$chunkID.chunk"
+
+            // Read the compressed chunk data from temporary file
+            val chunkBuffer = filesystem.source(chunkTempPath).buffer().use { source ->
+                source.readByteArray()
             }
 
-            fileStreamData.fileHandle!!.write(chunk.offset, decompressedBuffer, 0, written)
-        } finally {
-            fileStreamData.fileLock.unlock()
-        }
+            // Decompress the chunk if we have a depot key
+            val decompressedChunkBuffer = if (depotKey != null) {
+                val decompressed = ByteArray(chunk.uncompressedLength)
+                DepotChunk.process(chunk, chunkBuffer, decompressed, depotKey)
+                decompressed
+            } else {
+                chunkBuffer
+            }
 
-        val remainingChunks = fileStreamData.chunksToDownload.decrementAndGet()
-        if (remainingChunks == 0) {
-            fileStreamData.fileHandle?.close()
+            // Write decompressed chunk at specific file offset using RandomAccessFile
+            RandomAccessFile(fileFinalPath.toFile(), "rw").use { randomAccessFile ->
+                randomAccessFile.seek(writeOffset)
+                randomAccessFile.write(decompressedChunkBuffer)
+            }
 
-            // File completed - notify with percentage
+            // Clean up temporary chunk file immediately after processing
+            try {
+                filesystem.delete(chunkTempPath)
+            } catch (e: Exception) {
+                logger?.debug("Failed to delete temporary chunk file $chunkTempPath: ${e.message}")
+            }
+
+            // File completed - update counters and notify
+            val totalCompressedBytes = chunk.compressedLength
+            val totalUncompressedBytes = chunk.uncompressedLength
+
             val sizeDownloaded = synchronized(depotDownloadCounter) {
-                depotDownloadCounter.sizeDownloaded += written.toLong()
-                depotDownloadCounter.depotBytesCompressed += chunk.compressedLength
-                depotDownloadCounter.depotBytesUncompressed += chunk.uncompressedLength
+                depotDownloadCounter.sizeDownloaded += totalCompressedBytes
+                depotDownloadCounter.depotBytesCompressed += totalCompressedBytes
+                depotDownloadCounter.depotBytesUncompressed += totalUncompressedBytes
                 depotDownloadCounter.sizeDownloaded
             }
 
             synchronized(downloadCounter) {
-                downloadCounter.totalBytesCompressed += chunk.compressedLength
-                downloadCounter.totalBytesUncompressed += chunk.uncompressedLength
+                downloadCounter.totalBytesCompressed += totalCompressedBytes
+                downloadCounter.totalBytesUncompressed += totalUncompressedBytes
             }
 
-            val fileFinalPath = depot.installDir / file.fileName
             val depotPercentage = (sizeDownloaded.toFloat() / depotDownloadCounter.completeDownloadSize)
-
-            notifyListeners { listener ->
-                listener.onFileCompleted(
-                    depotId = depot.depotId,
-                    fileName = fileFinalPath.toString(),
-                    depotPercentComplete = depotPercentage
-                )
-            }
-
-            logger?.debug("%.2f%% %s".format(depotPercentage, fileFinalPath))
-        } else {
-            // Update counters and notify on chunk completion
-            val sizeDownloaded: Long
-            val depotPercentage: Float
-            val compressedBytes: Long
-            val uncompressedBytes: Long
-
-            synchronized(depotDownloadCounter) {
-                depotDownloadCounter.sizeDownloaded += written.toLong()
-                depotDownloadCounter.depotBytesCompressed += chunk.compressedLength
-                depotDownloadCounter.depotBytesUncompressed += chunk.uncompressedLength
-
-                sizeDownloaded = depotDownloadCounter.sizeDownloaded
-                compressedBytes = depotDownloadCounter.depotBytesCompressed
-                uncompressedBytes = depotDownloadCounter.depotBytesUncompressed
-                depotPercentage = (sizeDownloaded.toFloat() / depotDownloadCounter.completeDownloadSize)
-            }
-
-            synchronized(downloadCounter) {
-                downloadCounter.totalBytesCompressed += chunk.compressedLength
-                downloadCounter.totalBytesUncompressed += chunk.uncompressedLength
-            }
 
             notifyListeners { listener ->
                 listener.onChunkCompleted(
                     depotId = depot.depotId,
                     depotPercentComplete = depotPercentage,
-                    compressedBytes = compressedBytes,
-                    uncompressedBytes = uncompressedBytes
+                    compressedBytes = downloadCounter.totalBytesCompressed,
+                    uncompressedBytes = downloadCounter.totalBytesUncompressed
                 )
             }
+
+            val remainingDownloads = item.fileStreamData.chunksDownloaded.decrementAndGet()
+
+            if (remainingDownloads == 0) {
+                logger?.debug("File ${file.fileName} successfully finalized")
+
+                notifyListeners { listener ->
+                    listener.onFileCompleted(
+                        depotId = depot.depotId,
+                        fileName = fileFinalPath.toString(),
+                        depotPercentComplete = 1.0f
+                    )
+                }
+
+                logger?.debug("%.2f%% %s".format(1.0f, fileFinalPath))
+
+                try {
+                    // Remove chunks from staging directory
+                    if (filesystem.exists(chunkTempDir)) {
+                        filesystem.deleteRecursively(chunkTempDir)
+                    }
+                } catch (e: Exception) {
+                    logger?.error("Failed to delete chunks from staging directory: ${e.message}")
+                }
+            }
+
+            // Decrement the pending chunks counter
+            pendingChunks.decrementAndGet()
+        } catch (e: Exception) {
+            logger?.error("Failed to write file ${file.fileName}: ${e.message}")
         }
     }
 
