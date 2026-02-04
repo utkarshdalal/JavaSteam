@@ -1,7 +1,6 @@
 package `in`.dragonbra.javasteam.depotdownloader
 
 import `in`.dragonbra.javasteam.depotdownloader.data.AppItem
-import `in`.dragonbra.javasteam.depotdownloader.data.ChunkMatch
 import `in`.dragonbra.javasteam.depotdownloader.data.DepotDownloadCounter
 import `in`.dragonbra.javasteam.depotdownloader.data.DepotDownloadInfo
 import `in`.dragonbra.javasteam.depotdownloader.data.DepotFilesData
@@ -27,7 +26,6 @@ import `in`.dragonbra.javasteam.types.FileData
 import `in`.dragonbra.javasteam.types.KeyValue
 import `in`.dragonbra.javasteam.types.PublishedFileID
 import `in`.dragonbra.javasteam.types.UGCHandle
-import `in`.dragonbra.javasteam.util.Adler32
 import `in`.dragonbra.javasteam.util.SteamKitWebRequestException
 import `in`.dragonbra.javasteam.util.Strings
 import `in`.dragonbra.javasteam.util.log.LogManager
@@ -1286,7 +1284,7 @@ class DepotDownloader @JvmOverloads constructor(
             neededChunks = ArrayList(file.chunks)
         } else {
             // open existing
-            if (oldManifestFile != null) {
+            /*if (oldManifestFile != null) {
                 neededChunks = arrayListOf()
 
                 val hashMatches = oldManifestFile.fileHash.contentEquals(file.fileHash)
@@ -1373,58 +1371,60 @@ class DepotDownloader @JvmOverloads constructor(
                         filesystem.delete(fileStagingPath)
                     }
                 }
+            } else {*/
+            // Calculate actual file hash from filesystem
+            val actualFileHash = if (fileFinalPath.toFile().exists()) {
+                Util.fileSHAHash(fileFinalPath)
             } else {
-                // Calculate actual file hash from filesystem
-                val actualFileHash = if (fileFinalPath.toFile().exists()) {
-                    Util.fileSHAHash(fileFinalPath)
-                } else {
-                    byteArrayOf()
+                byteArrayOf()
+            }
+
+            val hashMatches = file.fileHash.contentEquals(actualFileHash)
+            if (hashMatches) {
+                logger?.debug("File $fileFinalPath already exists and matches hash, skipping download")
+
+                synchronized(depotDownloadCounter) {
+                    depotDownloadCounter.sizeDownloaded += file.totalSize
+
+                    val percentage =
+                        (depotDownloadCounter.sizeDownloaded / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
+                    logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
                 }
 
-                val hashMatches = file.fileHash.contentEquals(actualFileHash)
-                if (hashMatches) {
-                    logger?.debug("File $fileFinalPath already exists and matches hash, skipping download")
-
-                    synchronized(depotDownloadCounter) {
-                        depotDownloadCounter.sizeDownloaded += file.totalSize
-
-                        val percentage =
-                            (depotDownloadCounter.sizeDownloaded / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
-                        logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
-                    }
-
-                    synchronized(downloadCounter) {
-                        downloadCounter.completeDownloadSize -= file.totalSize
-                    }
-
-                    return@withContext
+                synchronized(downloadCounter) {
+                    downloadCounter.completeDownloadSize -= file.totalSize
                 }
 
-                // No old manifest or file not in old manifest. We must validate.
-                val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
-                if (fileSize.toULong() != file.totalSize.toULong()) {
-                    try {
-                        // okio resize can OOM for large files on android.
-                        RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
-                            raf.setLength(file.totalSize)
-                        }
-                    } catch (ex: IOException) {
-                        throw DepotDownloaderException(
-                            "Failed to allocate file $fileFinalPath: ${ex.message}"
-                        )
+                return@withContext
+            } else {
+                logger?.debug("File $fileFinalPath does not match hash, downloading")
+            }
+
+            // No old manifest or file not in old manifest. We must validate.
+            val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
+            if (fileSize.toULong() != file.totalSize.toULong()) {
+                try {
+                    // okio resize can OOM for large files on android.
+                    RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
+                        raf.setLength(file.totalSize)
                     }
-                }
-
-                filesystem.openReadWrite(fileFinalPath).use { handle ->
-                    logger?.debug("Validating $fileFinalPath")
-                    notifyListeners { it.onStatusUpdate("Validating: ${file.fileName}") }
-
-                    neededChunks = Util.validateSteam3FileChecksums(
-                        handle = handle,
-                        chunkData = file.chunks.sortedBy { it.offset }
-                    ).toMutableList()
+                } catch (ex: IOException) {
+                    throw DepotDownloaderException(
+                        "Failed to allocate file $fileFinalPath: ${ex.message}"
+                    )
                 }
             }
+
+            filesystem.openReadWrite(fileFinalPath).use { handle ->
+                logger?.debug("Validating $fileFinalPath")
+                notifyListeners { it.onStatusUpdate("Validating: ${file.fileName}") }
+
+                neededChunks = Util.validateSteam3FileChecksums(
+                    handle = handle,
+                    chunkData = file.chunks.sortedBy { it.offset }
+                ).toMutableList()
+            }
+            // }
 
             if (neededChunks!!.isEmpty()) {
                 synchronized(depotDownloadCounter) {
