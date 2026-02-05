@@ -10,11 +10,13 @@ import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserver2
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverLbs.CMsgClientLBSFindOrCreateLB
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverLbs.CMsgClientLBSGetLBEntries
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverUserstats.CMsgClientGetUserStats
+import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverUserstats.CMsgClientStoreUserStats
 import `in`.dragonbra.javasteam.steam.handlers.ClientMsgHandler
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.FindOrCreateLeaderboardCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.LeaderboardEntriesCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.NumberOfPlayersCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.UserStatsCallback
+import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.UserStatsStoredCallback
 import `in`.dragonbra.javasteam.steam.steamclient.callbackmgr.CallbackMsg
 import `in`.dragonbra.javasteam.types.AsyncJobSingle
 import `in`.dragonbra.javasteam.types.SteamID
@@ -175,6 +177,46 @@ class SteamUserStats : ClientMsgHandler() {
     }
 
     /**
+     * Sends the given stats (and achievement bits encoded as stats) to the Steam back-end for storage.
+     * Results are returned in a [UserStatsStoredCallback].
+     * The returned [AsyncJobSingle] can be awaited to retrieve the callback result.
+     *
+     * @param appId        The app id of the game.
+     * @param statsToStore The stats to store (stat_id and stat_value pairs). Achievements are encoded as stats in the schema.
+     * @param explicitReset If true, request an explicit reset of stats.
+     * @return The Job ID of the request. This can be used to find the appropriate [UserStatsStoredCallback].
+     */
+    @JavaSteamAddition
+    fun storeUserStats(
+        appId: Int,
+        statsToStore: List<Stats>,
+        explicitReset: Boolean = false,
+    ): AsyncJobSingle<UserStatsStoredCallback> {
+        val msg = ClientMsgProtobuf<CMsgClientStoreUserStats.Builder>(
+            CMsgClientStoreUserStats::class.java,
+            EMsg.ClientStoreUserStats
+        ).apply {
+            sourceJobID = client.getNextJobID()
+
+            body.gameId = appId.toLong()
+            body.explicitReset = explicitReset
+
+            statsToStore.forEach { s ->
+                body.addStatsToStore(
+                    CMsgClientStoreUserStats.Stats_To_Store.newBuilder()
+                        .setStatId(s.statId)
+                        .setStatValue(s.statValue)
+                        .build()
+                )
+            }
+        }
+
+        client.send(msg)
+
+        return AsyncJobSingle(this.client, msg.sourceJobID)
+    }
+
+    /**
      * Handles a client message. This should not be called directly.
      * @param packetMsg The packet message that contains the data.
      */
@@ -191,6 +233,7 @@ class SteamUserStats : ClientMsgHandler() {
             EMsg.ClientLBSFindOrCreateLBResponse -> FindOrCreateLeaderboardCallback(packetMsg)
             EMsg.ClientLBSGetLBEntriesResponse -> LeaderboardEntriesCallback(packetMsg)
             EMsg.ClientGetUserStatsResponse -> UserStatsCallback(packetMsg)
+            EMsg.ClientStoreUserStatsResponse -> UserStatsStoredCallback(packetMsg)
             else -> null
         }
     }
