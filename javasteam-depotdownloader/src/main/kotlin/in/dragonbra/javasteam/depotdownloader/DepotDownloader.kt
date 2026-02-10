@@ -1372,15 +1372,32 @@ class DepotDownloader @JvmOverloads constructor(
                     }
                 }
             } else {*/
-            // Calculate actual file hash from filesystem
-            val actualFileHash = if (fileFinalPath.toFile().exists()) {
-                Util.fileSHAHash(fileFinalPath)
-            } else {
-                byteArrayOf()
+            // No old manifest or file not in old manifest. We must validate.
+            val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
+            if (fileSize.toULong() != file.totalSize.toULong()) {
+                try {
+                    // okio resize can OOM for large files on android.
+                    RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
+                        raf.setLength(file.totalSize)
+                    }
+                } catch (ex: IOException) {
+                    throw DepotDownloaderException(
+                        "Failed to allocate file $fileFinalPath: ${ex.message}"
+                    )
+                }
             }
 
-            val hashMatches = file.fileHash.contentEquals(actualFileHash)
-            if (hashMatches) {
+            filesystem.openReadOnly(fileFinalPath).use { handle ->
+                logger?.debug("Validating $fileFinalPath")
+                notifyListeners { it.onStatusUpdate("Validating: ${file.fileName}") }
+
+                neededChunks = Util.validateSteam3FileChecksums(
+                    handle = handle,
+                    chunkData = file.chunks.sortedBy { it.offset }
+                ).toMutableList()
+            }
+
+            if (neededChunks!!.isEmpty()) {
                 logger?.debug("File $fileFinalPath already exists and matches hash, skipping download")
 
                 synchronized(depotDownloadCounter) {
@@ -1398,48 +1415,6 @@ class DepotDownloader @JvmOverloads constructor(
                 return@withContext
             } else {
                 logger?.debug("File $fileFinalPath does not match hash, downloading")
-            }
-
-            // No old manifest or file not in old manifest. We must validate.
-            val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
-            if (fileSize.toULong() != file.totalSize.toULong()) {
-                try {
-                    // okio resize can OOM for large files on android.
-                    RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
-                        raf.setLength(file.totalSize)
-                    }
-                } catch (ex: IOException) {
-                    throw DepotDownloaderException(
-                        "Failed to allocate file $fileFinalPath: ${ex.message}"
-                    )
-                }
-            }
-
-            filesystem.openReadWrite(fileFinalPath).use { handle ->
-                logger?.debug("Validating $fileFinalPath")
-                notifyListeners { it.onStatusUpdate("Validating: ${file.fileName}") }
-
-                neededChunks = Util.validateSteam3FileChecksums(
-                    handle = handle,
-                    chunkData = file.chunks.sortedBy { it.offset }
-                ).toMutableList()
-            }
-            // }
-
-            if (neededChunks!!.isEmpty()) {
-                synchronized(depotDownloadCounter) {
-                    depotDownloadCounter.sizeDownloaded += file.totalSize
-
-                    val percentage =
-                        (depotDownloadCounter.sizeDownloaded / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
-                    logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
-                }
-
-                synchronized(downloadCounter) {
-                    downloadCounter.completeDownloadSize -= file.totalSize
-                }
-
-                return@withContext
             }
 
             val sizeOnDisk = file.totalSize - neededChunks!!.sumOf { it.uncompressedLength }
