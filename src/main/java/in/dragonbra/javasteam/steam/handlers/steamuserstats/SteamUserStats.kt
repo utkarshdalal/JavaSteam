@@ -10,7 +10,7 @@ import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserver2
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverLbs.CMsgClientLBSFindOrCreateLB
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverLbs.CMsgClientLBSGetLBEntries
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverUserstats.CMsgClientGetUserStats
-import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverUserstats.CMsgClientStoreUserStats
+import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesClientserverUserstats.CMsgClientStoreUserStats2
 import `in`.dragonbra.javasteam.steam.handlers.ClientMsgHandler
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.FindOrCreateLeaderboardCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.LeaderboardEntriesCallback
@@ -181,29 +181,38 @@ class SteamUserStats : ClientMsgHandler() {
      * Results are returned in a [UserStatsStoredCallback].
      * The returned [AsyncJobSingle] can be awaited to retrieve the callback result.
      *
-     * @param appId        The app id of the game.
-     * @param statsToStore The stats to store (stat_id and stat_value pairs). Achievements are encoded as stats in the schema.
-     * @param explicitReset If true, request an explicit reset of stats.
+     * @param appId          The app id of the game.
+     * @param statsToStore   The stats to store (stat_id and stat_value pairs). Achievements are encoded as stats in the schema.
+     * @param settorSteamId  The [SteamID] of the user setting the stats.
+     * @param setteeSteamId  The [SteamID] of the user whose stats are being set.
+     * @param crcStats       The CRC of the stats schema.
+     * @param explicitReset  If true, request an explicit reset of stats.
      * @return The Job ID of the request. This can be used to find the appropriate [UserStatsStoredCallback].
      */
     @JavaSteamAddition
     fun storeUserStats(
         appId: Int,
         statsToStore: List<Stats>,
+        settorSteamId: SteamID,
+        setteeSteamId: SteamID,
+        crcStats: Int = 0,
         explicitReset: Boolean = false,
     ): AsyncJobSingle<UserStatsStoredCallback> {
-        val msg = ClientMsgProtobuf<CMsgClientStoreUserStats.Builder>(
-            CMsgClientStoreUserStats::class.java,
-            EMsg.ClientStoreUserStats
+        val msg = ClientMsgProtobuf<CMsgClientStoreUserStats2.Builder>(
+            CMsgClientStoreUserStats2::class.java,
+            EMsg.ClientStoreUserStats2
         ).apply {
             sourceJobID = client.getNextJobID()
 
             body.gameId = appId.toLong()
+            body.settorSteamId = settorSteamId.convertToUInt64()
+            body.setteeSteamId = setteeSteamId.convertToUInt64()
+            body.crcStats = crcStats
             body.explicitReset = explicitReset
 
             statsToStore.forEach { s ->
-                body.addStatsToStore(
-                    CMsgClientStoreUserStats.Stats_To_Store.newBuilder()
+                body.addStats(
+                    CMsgClientStoreUserStats2.Stats.newBuilder()
                         .setStatId(s.statId)
                         .setStatValue(s.statValue)
                         .build()
