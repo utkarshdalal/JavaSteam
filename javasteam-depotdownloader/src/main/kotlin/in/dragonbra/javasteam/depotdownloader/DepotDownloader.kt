@@ -123,6 +123,7 @@ class DepotDownloader @JvmOverloads constructor(
     private val androidEmulation: Boolean = false,
     private val parentJob: Job? = null,
     private val autoStartDownload: Boolean = true,
+    private val filesystem: FileSystem = FileSystem.SYSTEM,
 ) : Closeable {
 
     companion object {
@@ -147,8 +148,6 @@ class DepotDownloader @JvmOverloads constructor(
     }
 
     private val completionFuture = CompletableFuture<Void>()
-
-    private val filesystem: FileSystem by lazy { FileSystem.SYSTEM }
 
     private val httpClient: HttpClient by lazy { HttpClient(maxConnections = maxDownloads) }
 
