@@ -67,7 +67,9 @@ import okio.Path.Companion.toPath
 import okio.buffer
 import org.apache.commons.lang3.SystemUtils
 import java.io.Closeable
+import java.io.File
 import java.io.IOException
+import java.util.Locale
 import java.io.RandomAccessFile
 import java.lang.IllegalStateException
 import java.time.Instant
@@ -172,6 +174,46 @@ class DepotDownloader @JvmOverloads constructor(
 
     private var chunkProcessingJob: Job? = null
     private var decompressJob: Job? = null
+
+    // path → resolved java.io.File (one entry per unique okio Path)
+    private val resolvedFileCache = ConcurrentHashMap<Path, File>()
+
+    // resolved parent dir → (lowercase name → on-disk child path)
+    // populated from a single listOrNull per dir, then updated on miss so
+    // subsequent depots referencing the same file with different casing find it
+    private val dirEntryCache = ConcurrentHashMap<Path, ConcurrentHashMap<String, Path>>()
+
+    /**
+     * Resolve [path] to an on-disk [File] through the injected [filesystem].
+     *
+     * [Path.toFile] bypasses [okio.ForwardingFileSystem.onPathParameter], so custom
+     * FileSystems (e.g. case-insensitive wrappers) have no effect. This helper
+     * canonicalizes through the filesystem so callers see the real on-disk path.
+     */
+    private fun Path.toResolvedFile(): File = resolvedFileCache.computeIfAbsent(this) { path ->
+        val parent = path.parent ?: return@computeIfAbsent path.toFile()
+        val resolvedParent = try {
+            filesystem.canonicalize(parent)
+        } catch (_: IOException) {
+            return@computeIfAbsent path.toFile()
+        }
+        val entries = dirEntryCache.computeIfAbsent(resolvedParent) { dir ->
+            val map = ConcurrentHashMap<String, Path>()
+            filesystem.listOrNull(dir)?.forEach { child ->
+                map.putIfAbsent(child.name.lowercase(Locale.ROOT), child)
+            }
+            map
+        }
+        val key = path.name.lowercase(Locale.ROOT)
+        val existing = entries[key]
+        if (existing != null) {
+            existing.toFile()
+        } else {
+            // file doesn't exist yet — register so later depots with different casing find it
+            val resolved = resolvedParent / path.name
+            (entries.putIfAbsent(key, resolved) ?: resolved).toFile()
+        }
+    }
 
     private var steam3: Steam3Session? = null
 
@@ -1273,7 +1315,7 @@ class DepotDownloader @JvmOverloads constructor(
             // create new file. need all chunks
             try {
                 // okio resize can OOM for large files on android.
-                RandomAccessFile(fileFinalPath.toFile(), "rw").use {
+                RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use {
                     it.setLength(file.totalSize)
                 }
             } catch (e: IOException) {
@@ -1345,7 +1387,7 @@ class DepotDownloader @JvmOverloads constructor(
                         filesystem.atomicMove(fileFinalPath, fileStagingPath)
 
                         try {
-                            RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
+                            RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { raf ->
                                 raf.setLength(file.totalSize)
                             }
                         } catch (ex: IOException) {
@@ -1376,7 +1418,7 @@ class DepotDownloader @JvmOverloads constructor(
             if (fileSize.toULong() != file.totalSize.toULong()) {
                 try {
                     // okio resize can OOM for large files on android.
-                    RandomAccessFile(fileFinalPath.toFile(), "rw").use { raf ->
+                    RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { raf ->
                         raf.setLength(file.totalSize)
                     }
                 } catch (ex: IOException) {
@@ -1426,16 +1468,18 @@ class DepotDownloader @JvmOverloads constructor(
             }
         }
 
+        val resolvedFinalFile = fileFinalPath.toResolvedFile()
+
         val fileIsExecutable = file.flags.contains(EDepotFileFlag.Executable)
         if (fileIsExecutable &&
             (!fileDidExist || oldManifestFile == null || !oldManifestFile.flags.contains(EDepotFileFlag.Executable))
         ) {
-            fileFinalPath.toFile().setExecutable(true)
+            resolvedFinalFile.setExecutable(true)
         } else if (!fileIsExecutable &&
             oldManifestFile != null &&
             oldManifestFile.flags.contains(EDepotFileFlag.Executable)
         ) {
-            fileFinalPath.toFile().setExecutable(false)
+            resolvedFinalFile.setExecutable(false)
         }
 
         val fileStreamData = FileStreamData(
@@ -1446,14 +1490,15 @@ class DepotDownloader @JvmOverloads constructor(
         )
 
         // Create a unique file ID for tracking using absolute path
-        val fileId = fileFinalPath.toFile().absolutePath // Get absolute path of final file
-            .replace(depot.installDir.toFile().absolutePath, "") // Remove depot install dir prefix
+        val resolvedFinalPath = resolvedFinalFile.absolutePath
+        val fileId = resolvedFinalPath
+            .replace(depot.installDir.toResolvedFile().absolutePath, "") // Remove depot install dir prefix
             .trimStart('/') // Remove leading slash
             .replace("\\", "/") // Replace backslashes with forward slashes
             .replace(".", "_") // Replace dots with underscores
             .replace(" ", "_") // Replace spaces with underscores
 
-        logger?.debug("File ID: $fileId, path: ${fileFinalPath.toFile().absolutePath}")
+        logger?.debug("File ID: $fileId, path: $resolvedFinalPath")
 
         neededChunks!!.forEach { chunk ->
             // Increment the pending chunks counter
@@ -1858,7 +1903,7 @@ class DepotDownloader @JvmOverloads constructor(
             }
 
             // Write decompressed chunk at specific file offset using RandomAccessFile
-            RandomAccessFile(fileFinalPath.toFile(), "rw").use { randomAccessFile ->
+            RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { randomAccessFile ->
                 randomAccessFile.seek(writeOffset)
                 randomAccessFile.write(decompressedChunkBuffer)
             }
@@ -1952,6 +1997,9 @@ class DepotDownloader @JvmOverloads constructor(
         httpClient.close()
 
         listeners.clear()
+
+        resolvedFileCache.clear()
+        dirEntryCache.clear()
 
         steam3?.close()
         steam3 = null
