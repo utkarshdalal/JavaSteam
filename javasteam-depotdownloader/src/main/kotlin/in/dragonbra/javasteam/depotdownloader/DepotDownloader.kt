@@ -717,7 +717,7 @@ class DepotDownloader @JvmOverloads constructor(
 
         // Non passworded branch, found the manifest
         if (node.value != null) {
-            return node.value!!.toLong()
+            return node.asUnsignedLong().toLong()
         }
 
         // If we requested public branch, and it had no manifest, nothing to do
@@ -764,7 +764,7 @@ class DepotDownloader @JvmOverloads constructor(
             return INVALID_MANIFEST_ID
         }
 
-        return node.value!!.toLong()
+        return node.asUnsignedLong().toLong()
     }
 
     private fun getSteam3AppBuildNumber(appId: Int, branch: String): Int {
