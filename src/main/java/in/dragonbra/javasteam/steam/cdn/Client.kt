@@ -120,10 +120,11 @@ class Client(steamClient: SteamClient) : Closeable {
     ): DepotManifest = withContext(Dispatchers.IO) {
         val manifestVersion = 5
 
+        val manifestIdStr = manifestId.toULong().toString()
         val url = if (manifestRequestCode > 0U) {
-            "depot/$depotId/manifest/$manifestId/$manifestVersion/$manifestRequestCode"
+            "depot/$depotId/manifest/$manifestIdStr/$manifestVersion/$manifestRequestCode"
         } else {
-            "depot/$depotId/manifest/$manifestId/$manifestVersion"
+            "depot/$depotId/manifest/$manifestIdStr/$manifestVersion"
         }
 
         val request = Request.Builder()

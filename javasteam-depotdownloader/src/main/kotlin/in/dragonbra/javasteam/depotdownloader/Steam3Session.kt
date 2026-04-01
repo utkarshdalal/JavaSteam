@@ -235,6 +235,8 @@ class Steam3Session(
             return@withContext 0UL
         }
 
+        val manifestIdStr = manifestId.toULong().toString()
+
         val requestCode = steamContent!!.getManifestRequestCode(
             depotId = depotId,
             appId = appId,
@@ -245,17 +247,17 @@ class Steam3Session(
         ).await().toULong()
 
         if (requestCode == 0UL) {
-            logger?.error("No manifest request code was returned for depot $depotId from app $appId, manifest $manifestId")
+            logger?.error("No manifest request code was returned for depot $depotId from app $appId, manifest $manifestIdStr")
 
             if (steamClient.isDisconnected) {
                 logger?.debug("Suggestion: Try logging in with a username as old manifests may not be available for anonymous accounts.")
             }
         } else {
-            logger?.debug("Got manifest request code for depot $depotId from app $appId, manifest $manifestId, result: $requestCode")
+            logger?.debug("Got manifest request code for depot $depotId from app $appId, manifest $manifestIdStr, result: $requestCode")
         }
 
         logger?.debug(
-            "getDepotManifestRequestCode($depotId, $appId, $manifestId, $branch) " +
+            "getDepotManifestRequestCode($depotId, $appId, $manifestIdStr, $branch) " +
                 "got request code $requestCode"
         )
 

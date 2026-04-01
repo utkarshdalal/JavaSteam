@@ -72,7 +72,7 @@ object Util {
     @JvmStatic
     @Throws(IOException::class)
     fun saveManifestToFile(directory: Path, manifest: DepotManifest): Boolean = try {
-        val filename = directory / "${manifest.depotID}_${manifest.manifestGID}.manifest"
+        val filename = directory / "${manifest.depotID}_${manifest.manifestGID.toULong()}.manifest"
         manifest.saveToFile(filename.toString())
 
         val shaFile = "$filename.sha".toPath()
@@ -95,7 +95,7 @@ object Util {
         badHashWarning: Boolean,
     ): DepotManifest? {
         // Try loading Steam format manifest first.
-        val filename = directory / "${depotId}_$manifestId.manifest"
+        val filename = directory / "${depotId}_${manifestId.toULong()}.manifest"
 
         if (FileSystem.SYSTEM.exists(filename)) {
             val expectedChecksum = try {
@@ -112,7 +112,7 @@ object Util {
             if (expectedChecksum != null && expectedChecksum.contentEquals(currentChecksum)) {
                 return DepotManifest.loadFromFile(filename.toString())
             } else if (badHashWarning) {
-                logger.debug("Manifest $manifestId on disk did not match the expected checksum.")
+                logger.debug("Manifest ${manifestId.toULong()} on disk did not match the expected checksum.")
             }
         }
 
@@ -173,12 +173,12 @@ object Util {
     @JvmStatic
     @Throws(IOException::class)
     fun dumpManifestToTextFile(depot: DepotDownloadInfo, manifest: DepotManifest) {
-        val txtManifest = depot.installDir / "manifest_${depot.depotId}_${depot.manifestId}.txt"
+        val txtManifest = depot.installDir / "manifest_${depot.depotId}_${depot.manifestId.toULong()}.txt"
 
         FileSystem.SYSTEM.write(txtManifest) {
             writeUtf8("Content Manifest for Depot ${depot.depotId}\n")
             writeUtf8("\n")
-            writeUtf8("Manifest ID / date     : ${depot.manifestId} / ${manifest.creationTime}\n")
+            writeUtf8("Manifest ID / date     : ${depot.manifestId.toULong()} / ${manifest.creationTime}\n")
 
             val uniqueChunks = manifest.files
                 .flatMap { it.chunks }

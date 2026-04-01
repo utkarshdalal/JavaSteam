@@ -999,6 +999,7 @@ class DepotDownloader @JvmOverloads constructor(
         var newManifest: DepotManifest? = null
 
         val configDir = depot.installDir / CONFIG_DIR
+        val manifestIdStr = depot.manifestId.toULong().toString()
 
         @Suppress("VariableInitializerIsRedundant")
         var lastManifestId = INVALID_MANIFEST_ID
@@ -1016,12 +1017,12 @@ class DepotDownloader @JvmOverloads constructor(
 
         if (lastManifestId == depot.manifestId && oldManifest != null) {
             newManifest = oldManifest
-            logger?.debug("Already have manifest ${depot.manifestId} for depot ${depot.depotId}.")
+            logger?.debug("Already have manifest $manifestIdStr for depot ${depot.depotId}.")
         } else {
             newManifest = Util.loadManifestFromFile(configDir, depot.depotId, depot.manifestId, true)
 
             if (newManifest != null) {
-                logger?.debug("Already have manifest ${depot.manifestId} for depot ${depot.depotId}.")
+                logger?.debug("Already have manifest $manifestIdStr for depot ${depot.depotId}.")
             } else {
                 logger?.debug("Downloading depot ${depot.depotId} manifest")
                 notifyListeners { it.onStatusUpdate("Downloading manifest for depot ${depot.depotId}") }
@@ -1073,7 +1074,7 @@ class DepotDownloader @JvmOverloads constructor(
                             }
                         }
 
-                        logger?.debug("Downloading manifest ${depot.manifestId} from $connection with ${cdnClientPool!!.proxyServer ?: "no proxy"}")
+                        logger?.debug("Downloading manifest $manifestIdStr from $connection with ${cdnClientPool!!.proxyServer ?: "no proxy"}")
 
                         newManifest = cdnClientPool!!.cdnClient!!.downloadManifest(
                             depotId = depot.depotId,
@@ -1087,7 +1088,6 @@ class DepotDownloader @JvmOverloads constructor(
 
                         cdnClientPool!!.returnConnection(connection)
                     } catch (e: CancellationException) {
-                        // logger?.error("Connection timeout downloading depot manifest ${depot.depotId} ${depot.manifestId}. Retrying.")
                         logger?.error("Cancellation Exception thrown in process manifest", e)
                         break
                     } catch (e: SteamKitWebRequestException) {
@@ -1104,25 +1104,25 @@ class DepotDownloader @JvmOverloads constructor(
 
                         // Unauthorized || Forbidden
                         if (e.statusCode == 401 || e.statusCode == 403) {
-                            logger?.error("Encountered ${depot.depotId} for depot manifest ${depot.manifestId} ${e.statusCode}. Aborting.")
+                            logger?.error("Encountered ${depot.depotId} for depot manifest $manifestIdStr ${e.statusCode}. Aborting.")
                             break
                         }
 
                         // NotFound
                         if (e.statusCode == 404) {
-                            logger?.error("Encountered 404 for depot manifest ${depot.depotId} ${depot.manifestId}. Aborting.")
+                            logger?.error("Encountered 404 for depot manifest ${depot.depotId} $manifestIdStr. Aborting.")
                             break
                         }
 
-                        logger?.error("Encountered error downloading depot manifest ${depot.depotId} ${depot.manifestId}: ${e.statusCode}")
+                        logger?.error("Encountered error downloading depot manifest ${depot.depotId} $manifestIdStr: ${e.statusCode}")
                     } catch (e: Exception) {
                         cdnClientPool!!.returnBrokenConnection(connection)
-                        logger?.error("Encountered error downloading manifest for depot ${depot.depotId} ${depot.manifestId}: ${e.message}")
+                        logger?.error("Encountered error downloading manifest for depot ${depot.depotId} $manifestIdStr: ${e.message}")
                     }
                 } while (newManifest == null)
 
                 if (newManifest == null) {
-                    logger?.error("\nUnable to download manifest ${depot.manifestId} for depot ${depot.depotId}")
+                    logger?.error("\nUnable to download manifest $manifestIdStr for depot ${depot.depotId}")
                     cancel()
                 }
 
@@ -1133,7 +1133,7 @@ class DepotDownloader @JvmOverloads constructor(
             }
         }
 
-        logger?.debug("Manifest ${depot.manifestId} (${newManifest.creationTime})")
+        logger?.debug("Manifest $manifestIdStr (${newManifest.creationTime})")
 
         if (config.downloadManifestOnly) {
             Util.dumpManifestToTextFile(depot, newManifest)

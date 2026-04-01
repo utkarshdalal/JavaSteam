@@ -90,6 +90,14 @@ dependencies {
     implementation(libs.kotlin.stdib)
     implementation(libs.okio)
     implementation(libs.protobuf.java)
+
+    testImplementation(platform(libs.tests.junit.bom))
+    testImplementation(libs.bundles.testing)
+    testRuntimeOnly(libs.tests.junit.platform)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 /* Artifact publishing */

@@ -580,7 +580,7 @@ class KeyValue @JvmOverloads constructor(
                     Type.POINTER,
                     -> localCurrent.value = input.readInt().toString()
 
-                    Type.UINT64 -> localCurrent.value = input.readLong().toString()
+                    Type.UINT64 -> localCurrent.value = input.readLong().toULong().toString()
                     Type.FLOAT32 -> localCurrent.value = input.readFloat().toString()
                     Type.INT64 -> localCurrent.value = input.readLong().toString()
                     else -> return false
