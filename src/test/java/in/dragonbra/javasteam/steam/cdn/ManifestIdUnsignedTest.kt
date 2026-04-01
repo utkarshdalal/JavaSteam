@@ -133,10 +133,14 @@ class ManifestIdUnsignedTest {
         client.use {
             try {
                 it.downloadManifestFuture(
-                    /* depotId = */ 3701,
-                    /* manifestId = */ manifestIdSigned,
-                    /* manifestRequestCode = */ 12345L,
-                    /* server = */ Server.fromHostAndPort("localhost", 80),
+                    /* depotId = */
+                    3701,
+                    /* manifestId = */
+                    manifestIdSigned,
+                    /* manifestRequestCode = */
+                    12345L,
+                    /* server = */
+                    Server.fromHostAndPort("localhost", 80),
                 ).get()
             } catch (_: Exception) {
                 // expected 404
@@ -167,10 +171,14 @@ class ManifestIdUnsignedTest {
         client.use {
             try {
                 it.downloadManifestFuture(
-                    /* depotId = */ 3701,
-                    /* manifestId = */ LARGE_MANIFEST_SIGNED,
-                    /* manifestRequestCode = */ 0L,
-                    /* server = */ Server.fromHostAndPort("localhost", 80),
+                    /* depotId = */
+                    3701,
+                    /* manifestId = */
+                    LARGE_MANIFEST_SIGNED,
+                    /* manifestRequestCode = */
+                    0L,
+                    /* server = */
+                    Server.fromHostAndPort("localhost", 80),
                 ).get()
             } catch (_: Exception) {
                 // expected 404
