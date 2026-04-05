@@ -20,6 +20,7 @@ import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamcli
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_ClientCommitFileUpload_Request
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_ClientFileDownload_Request
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_CompleteAppUploadBatch_Request
+import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_Delete_Request
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_ExternalStorageTransferReport_Notification
 import `in`.dragonbra.javasteam.protobufs.steamclient.SteammessagesCloudSteamclient.CCloud_GetAppFileChangelist_Request
 import `in`.dragonbra.javasteam.rpc.service.ClientMetrics
@@ -318,6 +319,32 @@ class SteamCloud : ClientMsgHandler() {
         }
 
         cloudService.completeAppUploadBatchBlocking(request.build()).await()
+    }
+
+    /**
+     * Deletes a file from the user's Steam Cloud storage
+     *
+     * @param appId          The ID of the app the file belongs to
+     * @param filename       The path to the file to delete including the prefix (ex %GameInstall%)
+     * @param uploadBatchId  The ID of the upload batch this deletion belongs to (optional)
+     * @return Whether the file was successfully deleted
+     */
+    @JavaSteamAddition
+    @JvmOverloads
+    fun deleteFile(
+        appId: Int,
+        filename: String,
+        uploadBatchId: Long? = null,
+        parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    ): CompletableFuture<Boolean> = parentScope.future {
+        val request = CCloud_Delete_Request.newBuilder().apply {
+            this.appid = appId
+            this.filename = filename
+            uploadBatchId?.let { this.uploadBatchId = it }
+        }
+
+        val response = cloudService.delete(request.build()).await()
+        response.result == EResult.OK
     }
 
     /**
