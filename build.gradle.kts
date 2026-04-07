@@ -35,7 +35,7 @@ plugins {
 
 allprojects {
     group = "io.github.joshuatam"
-    version = "1.8.0.1-17-SNAPSHOT"
+    version = "1.8.0.1-18-SNAPSHOT"
 }
 
 repositories {

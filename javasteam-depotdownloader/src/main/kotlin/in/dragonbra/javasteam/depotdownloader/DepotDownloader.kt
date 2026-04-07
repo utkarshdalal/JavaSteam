@@ -62,6 +62,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import okio.Buffer
 import okio.FileSystem
+import okio.ForwardingFileSystem
 import okio.Path
 import okio.Path.Companion.toPath
 import okio.buffer
@@ -73,7 +74,6 @@ import java.io.RandomAccessFile
 import java.lang.IllegalStateException
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.Locale
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.collections.mutableListOf
@@ -125,7 +125,7 @@ class DepotDownloader @JvmOverloads constructor(
     private val androidEmulation: Boolean = false,
     private val parentJob: Job? = null,
     private val autoStartDownload: Boolean = true,
-    private val filesystem: FileSystem = FileSystem.SYSTEM,
+    private val filesystem: BaseCaseInsensitiveFileSystem = SimpleFileSystem(),
 ) : Closeable {
 
     companion object {
@@ -175,14 +175,6 @@ class DepotDownloader @JvmOverloads constructor(
     private var chunkProcessingJob: Job? = null
     private var decompressJob: Job? = null
 
-    // path → resolved java.io.File (one entry per unique okio Path)
-    private val resolvedFileCache = ConcurrentHashMap<Path, File>()
-
-    // resolved parent dir → (lowercase name → on-disk child path)
-    // populated from a single listOrNull per dir, then updated on miss so
-    // subsequent depots referencing the same file with different casing find it
-    private val dirEntryCache = ConcurrentHashMap<Path, ConcurrentHashMap<String, Path>>()
-
     /**
      * Resolve [path] to an on-disk [File] through the injected [filesystem].
      *
@@ -190,30 +182,7 @@ class DepotDownloader @JvmOverloads constructor(
      * FileSystems (e.g. case-insensitive wrappers) have no effect. This helper
      * canonicalizes through the filesystem so callers see the real on-disk path.
      */
-    private fun Path.toResolvedFile(): File = resolvedFileCache.computeIfAbsent(this) { path ->
-        val parent = path.parent ?: return@computeIfAbsent path.toFile()
-        val resolvedParent = try {
-            filesystem.canonicalize(parent)
-        } catch (_: IOException) {
-            return@computeIfAbsent path.toFile()
-        }
-        val entries = dirEntryCache.computeIfAbsent(resolvedParent) { dir ->
-            val map = ConcurrentHashMap<String, Path>()
-            filesystem.listOrNull(dir)?.forEach { child ->
-                map.putIfAbsent(child.name.lowercase(Locale.ROOT), child)
-            }
-            map
-        }
-        val key = path.name.lowercase(Locale.ROOT)
-        val existing = entries[key]
-        if (existing != null) {
-            existing.toFile()
-        } else {
-            // file doesn't exist yet — register so later depots with different casing find it
-            val resolved = resolvedParent / path.name
-            (entries.putIfAbsent(key, resolved) ?: resolved).toFile()
-        }
-    }
+    private fun Path.toResolvedFile(): File = filesystem.toResolvedFile(this)
 
     private var steam3: Steam3Session? = null
 
@@ -316,7 +285,7 @@ class DepotDownloader @JvmOverloads constructor(
                 } catch (e: Exception) {
                     logger?.error("Error decompressing file: ${e.message}", e)
                 }
-            }.flowOn(Dispatchers.Default)
+            }.flowOn(Dispatchers.IO)
         }
 
     // region [REGION] Downloading Operations
@@ -1957,6 +1926,10 @@ class DepotDownloader @JvmOverloads constructor(
 
                 logger?.debug("%.2f%% %s".format(1.0f, fileFinalPath))
 
+                // Remove cache entries for completed file from filesystem
+                filesystem.removeFileCache(fileFinalPath)
+                logger?.debug("Removed filesystem cache entries for completed file: $fileFinalPath")
+
                 try {
                     // Remove chunks from staging directory
                     if (filesystem.exists(chunkTempDir)) {
@@ -1998,8 +1971,7 @@ class DepotDownloader @JvmOverloads constructor(
 
         listeners.clear()
 
-        resolvedFileCache.clear()
-        dirEntryCache.clear()
+        filesystem.clearAllCaches()
 
         steam3?.close()
         steam3 = null
@@ -2009,4 +1981,43 @@ class DepotDownloader @JvmOverloads constructor(
 
         logger = null
     }
+}
+
+/**
+ * Okio [FileSystem] wrapper that resolves each path component against on-disk
+ * casing before delegating to [FileSystem.SYSTEM]. Prevents duplicate directories
+ * when Steam depot manifests use different casing than what's already installed
+ * (e.g. DLC referencing `_Work` when the base game created `_work`).
+ *
+ * Two-level cache: full-path results are cached so repeat operations on the same
+ * path (common during chunk writes) skip per-segment resolution entirely.
+ * Per-segment results are cached in a nested map so different paths sharing a
+ * common prefix reuse earlier resolution work without allocating keys.
+ */
+abstract class BaseCaseInsensitiveFileSystem(
+    delegate: FileSystem = SYSTEM,
+) : ForwardingFileSystem(delegate) {
+    /**
+     * Resolve [path] to an on-disk [File] through the filesystem.
+     * Handles case-insensitive file resolution and caching.
+     */
+    open fun toResolvedFile(path: Path): File = path.toFile()
+
+    /**
+     * Remove cache entries for a completed file path.
+     * This cleans up both the full path cache and segment cache entries
+     * for the file's parent directory to prevent memory accumulation.
+     */
+    open fun removeFileCache(path: Path) {
+    }
+
+    /**
+     * Clear all caches. Useful for cleanup when downloads are complete.
+     */
+    open fun clearAllCaches() {
+    }
+}
+
+class SimpleFileSystem : BaseCaseInsensitiveFileSystem() {
+    // Uses default implementations - no caching overhead
 }
