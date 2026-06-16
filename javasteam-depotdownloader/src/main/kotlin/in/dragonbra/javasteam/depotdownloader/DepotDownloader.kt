@@ -935,13 +935,20 @@ class DepotDownloader @JvmOverloads constructor(
         if (depotsToDownload.isEmpty()) {
             finishDepotDownload(mainAppId)
         } else {
+            // Find the last depot that has actual files to download (not just 0-byte files)
+            val lastDepotWithFilesIndex = depotsToDownload.indexOfLast { depotFileData ->
+                depotFileData.filteredFiles.any { file ->
+                    !file.flags.contains(EDepotFileFlag.Directory) && file.totalSize > 0L
+                }
+            }
+
             depotsToDownload.forEachIndexed { index, depotFileData ->
                 downloadSteam3DepotFiles(
                     mainAppId,
                     downloadCounter,
                     depotFileData,
                     allFileNamesAllDepots,
-                    index == depotsToDownload.size - 1
+                    index == lastDepotWithFilesIndex
                 )
             }
         }
@@ -1269,6 +1276,21 @@ class DepotDownloader @JvmOverloads constructor(
 
         val fileFinalPath = depot.installDir / file.fileName
         val fileStagingPath = stagingDir / file.fileName
+
+        // Special case: 0-byte files don't need downloading, just create empty file
+        if (file.totalSize == 0L) {
+            logger?.debug("File $fileFinalPath is 0 bytes, creating empty file and skipping download")
+
+            try {
+                RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use {
+                    it.setLength(0L)
+                }
+            } catch (e: IOException) {
+                throw DepotDownloaderException("Failed to create 0-byte file $fileFinalPath: ${e.message}")
+            }
+
+            return@withContext
+        }
 
         // This may still exist if the previous run exited before cleanup
         if (filesystem.exists(fileStagingPath)) {
