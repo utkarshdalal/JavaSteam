@@ -80,6 +80,8 @@ class UnifiedInterfaceTest {
             "UserAccount.kt",
             "PublishedFile.kt",
             "PublishedFileClient.kt",
+            "CloudConfigStore.kt",
+            "CloudConfigStoreClient.kt",
         )
     }
 }
