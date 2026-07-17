@@ -12,5 +12,7 @@ class AppFileInfo(response: CCloud_AppFileInfo) {
     val persistState: ECloudStoragePersistState = response.persistState
     val platformsToSync: Int = response.platformsToSync
     val pathPrefixIndex: Int = response.pathPrefixIndex
+    val hasPathPrefixIndex: Boolean = response.hasPathPrefixIndex()
     val machineNameIndex: Int = response.machineNameIndex
+    val hasMachineNameIndex: Boolean = response.hasMachineNameIndex()
 }
