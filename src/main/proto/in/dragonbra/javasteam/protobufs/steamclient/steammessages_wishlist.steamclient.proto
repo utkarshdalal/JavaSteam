@@ -1,0 +1,29 @@
+option java_package = "in.dragonbra.javasteam.protobufs.steamclient";
+
+option optimize_for = SPEED;
+option java_generic_services = false;
+
+// Trimmed from webui/service_wishlist.proto. The upstream requests carry an optional
+// CUserInterface_NavData field which only exists in the WebUI common protos; it is dropped here so
+// this file needs no imports. Field numbers match upstream, so the wire format is unchanged.
+
+message CWishlist_AddToWishlist_Request {
+  optional uint32 appid = 1;
+}
+
+message CWishlist_AddToWishlist_Response {
+  optional uint32 wishlist_count = 1;
+}
+
+message CWishlist_RemoveFromWishlist_Request {
+  optional uint32 appid = 1;
+}
+
+message CWishlist_RemoveFromWishlist_Response {
+  optional uint32 wishlist_count = 1;
+}
+
+service Wishlist {
+  rpc AddToWishlist (.CWishlist_AddToWishlist_Request) returns (.CWishlist_AddToWishlist_Response);
+  rpc RemoveFromWishlist (.CWishlist_RemoveFromWishlist_Request) returns (.CWishlist_RemoveFromWishlist_Response);
+}
