@@ -1,5 +1,7 @@
 package `in`.dragonbra.javasteam.depotdownloader.data
 
+import java.util.concurrent.atomic.AtomicLong
+
 // https://kotlinlang.org/docs/coding-conventions.html#source-file-organization
 
 /**
@@ -15,10 +17,10 @@ package `in`.dragonbra.javasteam.depotdownloader.data
  * @author Lossy
  * @since Oct 29, 2024
  */
-data class GlobalDownloadCounter(
-    var completeDownloadSize: Long = 0,
-    var totalBytesCompressed: Long = 0,
-    var totalBytesUncompressed: Long = 0,
+class GlobalDownloadCounter(
+    val completeDownloadSize: AtomicLong = AtomicLong(0),
+    val totalBytesCompressed: AtomicLong = AtomicLong(0),
+    val totalBytesUncompressed: AtomicLong = AtomicLong(0),
 )
 
 /**
@@ -36,8 +38,8 @@ data class GlobalDownloadCounter(
  * @since Oct 29, 2024
  */
 data class DepotDownloadCounter(
-    var completeDownloadSize: Long = 0,
-    var sizeDownloaded: Long = 0,
-    var depotBytesCompressed: Long = 0,
-    var depotBytesUncompressed: Long = 0,
+    var completeDownloadSize: AtomicLong = AtomicLong(0),
+    var sizeDownloaded: AtomicLong = AtomicLong(0),
+    var depotBytesCompressed: AtomicLong = AtomicLong(0),
+    var depotBytesUncompressed: AtomicLong = AtomicLong(0),
 )

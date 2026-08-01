@@ -33,8 +33,7 @@ import `in`.dragonbra.javasteam.util.log.Logger
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
-import io.ktor.utils.io.core.readAvailable
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -43,7 +42,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -60,7 +58,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
-import okio.Buffer
 import okio.FileSystem
 import okio.ForwardingFileSystem
 import okio.Path
@@ -72,6 +69,8 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.lang.IllegalStateException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.*
@@ -125,6 +124,7 @@ class DepotDownloader @JvmOverloads constructor(
     private val androidEmulation: Boolean = false,
     private val parentJob: Job? = null,
     private val autoStartDownload: Boolean = true,
+    private val skipLargeFileAllocation: Boolean = false,
     private val filesystem: BaseCaseInsensitiveFileSystem = SimpleFileSystem(),
 ) : Closeable {
 
@@ -401,17 +401,15 @@ class DepotDownloader @JvmOverloads constructor(
             logger?.debug("File size: ${totalBytes?.let { Util.formatBytes(it) } ?: "Unknown"}")
 
             filesystem.sink(fileStagingPath).buffer().use { sink ->
-                val buffer = Buffer()
                 val tempArray = ByteArray(DEFAULT_BUFFER_SIZE)
 
                 while (!channel.isClosedForRead) {
-                    val packet = channel.readRemaining(DEFAULT_BUFFER_SIZE.toLong())
-                    if (!packet.exhausted()) {
-                        val bytesRead = packet.readAvailable(tempArray, 0, tempArray.size)
-                        if (bytesRead > 0) {
-                            buffer.write(tempArray, 0, bytesRead)
-                            sink.writeAll(buffer)
-                        }
+                    val bytesRead = channel.readAvailable(tempArray, 0, tempArray.size)
+                    if (bytesRead == -1) {
+                        break // End of stream
+                    }
+                    if (bytesRead > 0) {
+                        sink.write(tempArray, 0, bytesRead)
                     }
                 }
             }
@@ -902,8 +900,7 @@ class DepotDownloader @JvmOverloads constructor(
     }
 
     private suspend fun downloadSteam3(mainAppId: Int, depots: List<DepotDownloadInfo>): Unit = coroutineScope {
-        val maxNumServers = maxDownloads.coerceIn(20, 64) // Hard clamp at 64. Not sure how high we can go.
-        cdnClientPool?.updateServerList(maxNumServers)
+        cdnClientPool?.updateServerList(maxDownloads)
 
         val downloadCounter = GlobalDownloadCounter()
         val depotsToDownload = ArrayList<DepotFilesData>(depots.size)
@@ -1144,8 +1141,8 @@ class DepotDownloader @JvmOverloads constructor(
                 filesystem.createDirectories(fileFinalPath.parent!!)
                 filesystem.createDirectories(fileStagingPath.parent!!)
 
-                downloadCounter.completeDownloadSize += file.totalSize
-                depotCounter.completeDownloadSize += file.totalSize
+                downloadCounter.completeDownloadSize.addAndGet(file.totalSize)
+                depotCounter.completeDownloadSize.addAndGet(file.totalSize)
             }
         }
 
@@ -1177,19 +1174,26 @@ class DepotDownloader @JvmOverloads constructor(
 
         try {
             coroutineScope {
-                // Second parallel loop - process files and enqueue chunks
-                files.chunked(50).forEach { batch ->
+                // Sequential file pre-allocation, then enqueue chunks for parallel download
+                files.forEach { file ->
                     yield()
 
-                    batch.map { file ->
-                        async {
-                            downloadSteam3DepotFile(
-                                downloadCounter = downloadCounter,
-                                depotFilesData = depotFilesData,
-                                file = file,
-                            )
-                        }
-                    }.awaitAll()
+                    // Pre-allocate file sequentially
+                    val neededChunks = prepareFileForDownload(
+                        downloadCounter = downloadCounter,
+                        depotFilesData = depotFilesData,
+                        file = file,
+                    )
+
+                    // Immediately enqueue chunks for parallel download
+                    if (neededChunks.isNotEmpty()) {
+                        enqueueFileChunks(
+                            downloadCounter = downloadCounter,
+                            depotFilesData = depotFilesData,
+                            file = file,
+                            neededChunks = neededChunks,
+                        )
+                    }
                 }
             }
         } finally {
@@ -1249,19 +1253,19 @@ class DepotDownloader @JvmOverloads constructor(
         notifyListeners { listener ->
             listener.onDepotCompleted(
                 depotId = depot.depotId,
-                compressedBytes = depotCounter.depotBytesCompressed,
-                uncompressedBytes = depotCounter.depotBytesUncompressed
+                compressedBytes = depotCounter.depotBytesCompressed.get(),
+                uncompressedBytes = depotCounter.depotBytesUncompressed.get()
             )
         }
 
         logger?.debug("Depot ${depot.depotId} - Downloaded ${depotCounter.depotBytesCompressed} bytes (${depotCounter.depotBytesUncompressed} bytes uncompressed)")
     }
 
-    private suspend fun downloadSteam3DepotFile(
+    private suspend fun prepareFileForDownload(
         downloadCounter: GlobalDownloadCounter,
         depotFilesData: DepotFilesData,
         file: FileData,
-    ) = withContext(Dispatchers.IO) {
+    ): List<ChunkData> = withContext(Dispatchers.IO) {
         ensureActive()
 
         val depot = depotFilesData.depotDownloadInfo
@@ -1289,13 +1293,15 @@ class DepotDownloader @JvmOverloads constructor(
                 throw DepotDownloaderException("Failed to create 0-byte file $fileFinalPath: ${e.message}")
             }
 
-            return@withContext
+            return@withContext emptyList()
         }
 
         // This may still exist if the previous run exited before cleanup
         if (filesystem.exists(fileStagingPath)) {
             filesystem.delete(fileStagingPath)
         }
+
+        val skipAllocation = skipLargeFileAllocation && file.totalSize > 100 * 1024 * 1024L
 
         var neededChunks: MutableList<ChunkData>? = null
         val fileDidExist = filesystem.exists(fileFinalPath)
@@ -1307,7 +1313,11 @@ class DepotDownloader @JvmOverloads constructor(
             try {
                 // okio resize can OOM for large files on android.
                 RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use {
-                    it.setLength(file.totalSize)
+                    if (skipAllocation) {
+                        it.setLength(0L)
+                    } else {
+                        it.setLength(file.totalSize)
+                    }
                 }
             } catch (e: IOException) {
                 throw DepotDownloaderException("Failed to allocate file $fileFinalPath: ${e.message}")
@@ -1316,101 +1326,17 @@ class DepotDownloader @JvmOverloads constructor(
             neededChunks = ArrayList(file.chunks)
         } else {
             // open existing
-            /*if (oldManifestFile != null) {
-                neededChunks = arrayListOf()
-
-                val hashMatches = oldManifestFile.fileHash.contentEquals(file.fileHash)
-                if (config.verifyAll || !hashMatches) {
-                    // we have a version of this file, but it doesn't fully match what we want
-                    if (config.verifyAll) {
-                        logger?.debug("Validating: $fileFinalPath")
-                    }
-
-                    val matchingChunks = arrayListOf<ChunkMatch>()
-
-                    file.chunks.forEach { chunk ->
-                        yield()
-
-                        val oldChunk = oldManifestFile.chunks.firstOrNull { c ->
-                            c.chunkID.contentEquals(chunk.chunkID)
-                        }
-                        if (oldChunk != null) {
-                            val chunkMatch = ChunkMatch(oldChunk, chunk)
-                            matchingChunks.add(chunkMatch)
-                        } else {
-                            neededChunks.add(chunk)
-                        }
-                    }
-
-                    val orderedChunks = matchingChunks.sortedBy { x -> x.oldChunk.offset }
-
-                    val copyChunks = arrayListOf<ChunkMatch>()
-
-                    filesystem.openReadOnly(fileFinalPath).use { handle ->
-                        orderedChunks.forEach { match ->
-                            yield()
-
-                            // Read the chunk data into a byte array
-                            val length = match.oldChunk.uncompressedLength
-                            val buffer = ByteArray(length)
-                            handle.read(match.oldChunk.offset, buffer, 0, length)
-
-                            // Calculate Adler32 checksum
-                            val adler = Adler32.calculate(buffer)
-
-                            // Convert checksum to byte array for comparison
-                            val checksumBytes = Buffer().apply {
-                                writeIntLe(match.oldChunk.checksum)
-                            }.readByteArray()
-                            val calculatedChecksumBytes = Buffer().apply {
-                                writeIntLe(adler)
-                            }.readByteArray()
-
-                            if (!calculatedChecksumBytes.contentEquals(checksumBytes)) {
-                                neededChunks.add(match.newChunk)
-                            } else {
-                                copyChunks.add(match)
-                            }
-                        }
-                    }
-
-                    if (!hashMatches || neededChunks.isNotEmpty()) {
-                        filesystem.atomicMove(fileFinalPath, fileStagingPath)
-
-                        try {
-                            RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { raf ->
-                                raf.setLength(file.totalSize)
-                            }
-                        } catch (ex: IOException) {
-                            throw DepotDownloaderException(
-                                "Failed to resize file to expected size $fileFinalPath: ${ex.message}"
-                            )
-                        }
-
-                        filesystem.openReadOnly(fileStagingPath).use { oldHandle ->
-                            filesystem.openReadWrite(fileFinalPath).use { newHandle ->
-                                // okio resize can OOM for large files on android.
-                                for (match in copyChunks) {
-                                    ensureActive()
-
-                                    val tmp = ByteArray(match.oldChunk.uncompressedLength)
-                                    oldHandle.read(match.oldChunk.offset, tmp, 0, tmp.size)
-                                    newHandle.write(match.newChunk.offset, tmp, 0, tmp.size)
-                                }
-                            }
-                        }
-
-                        filesystem.delete(fileStagingPath)
-                    }
-                }
-            } else {*/
             // No old manifest or file not in old manifest. We must validate.
             val fileSize = filesystem.metadata(fileFinalPath).size ?: 0L
             if (fileSize.toULong() != file.totalSize.toULong()) {
                 try {
                     // okio resize can OOM for large files on android.
-                    RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { raf ->
-                        raf.setLength(file.totalSize)
+                    RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use {
+                        if (skipAllocation) {
+                            it.setLength(0L)
+                        } else {
+                            it.setLength(file.totalSize)
+                        }
                     }
                 } catch (ex: IOException) {
                     throw DepotDownloaderException(
@@ -1432,31 +1358,22 @@ class DepotDownloader @JvmOverloads constructor(
             if (neededChunks!!.isEmpty()) {
                 logger?.debug("File $fileFinalPath already exists and matches hash, skipping download")
 
-                synchronized(depotDownloadCounter) {
-                    depotDownloadCounter.sizeDownloaded += file.totalSize
+                depotDownloadCounter.sizeDownloaded.addAndGet(file.totalSize)
 
-                    val percentage =
-                        (depotDownloadCounter.sizeDownloaded / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
-                    logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
-                }
+                val percentage =
+                    (depotDownloadCounter.sizeDownloaded.get() / depotDownloadCounter.completeDownloadSize.toFloat()) * 100.0f
+                logger?.debug("%.2f%% %s".format(percentage, fileFinalPath))
 
-                synchronized(downloadCounter) {
-                    downloadCounter.completeDownloadSize -= file.totalSize
-                }
+                downloadCounter.completeDownloadSize.addAndGet(-file.totalSize)
 
-                return@withContext
+                return@withContext emptyList()
             } else {
                 logger?.debug("File $fileFinalPath does not match hash, downloading")
             }
 
             val sizeOnDisk = file.totalSize - neededChunks!!.sumOf { it.uncompressedLength }
-            synchronized(depotDownloadCounter) {
-                depotDownloadCounter.sizeDownloaded += sizeOnDisk
-            }
-
-            synchronized(downloadCounter) {
-                downloadCounter.completeDownloadSize -= sizeOnDisk
-            }
+            depotDownloadCounter.sizeDownloaded.addAndGet(sizeOnDisk)
+            downloadCounter.completeDownloadSize.addAndGet(-sizeOnDisk)
         }
 
         val resolvedFinalFile = fileFinalPath.toResolvedFile()
@@ -1473,11 +1390,24 @@ class DepotDownloader @JvmOverloads constructor(
             resolvedFinalFile.setExecutable(false)
         }
 
+        return@withContext neededChunks
+    }
+
+    private suspend fun enqueueFileChunks(
+        downloadCounter: GlobalDownloadCounter,
+        depotFilesData: DepotFilesData,
+        file: FileData,
+        neededChunks: List<ChunkData>,
+    ) = withContext(Dispatchers.IO) {
+        val depot = depotFilesData.depotDownloadInfo
+        val fileFinalPath = depot.installDir / file.fileName
+        val resolvedFinalFile = fileFinalPath.toResolvedFile()
+
         val fileStreamData = FileStreamData(
             fileHandle = null,
             fileLock = Mutex(),
             chunksDownloaded = AtomicInteger(0),
-            chunksToDownload = AtomicInteger(neededChunks!!.size)
+            chunksToDownload = AtomicInteger(neededChunks.size)
         )
 
         // Create a unique file ID for tracking using absolute path
@@ -1491,7 +1421,7 @@ class DepotDownloader @JvmOverloads constructor(
 
         logger?.debug("File ID: $fileId, path: $resolvedFinalPath")
 
-        neededChunks!!.forEach { chunk ->
+        neededChunks.forEach { chunk ->
             // Increment the pending chunks counter
             pendingChunks.incrementAndGet()
 
@@ -1503,7 +1433,7 @@ class DepotDownloader @JvmOverloads constructor(
                     fileStreamData = fileStreamData,
                     fileData = file,
                     chunk = chunk,
-                    totalChunksForFile = neededChunks!!.size,
+                    totalChunksForFile = neededChunks.size,
                     fileId = fileId,
                 )
             )
@@ -1888,15 +1818,21 @@ class DepotDownloader @JvmOverloads constructor(
             val decompressedChunkBuffer = if (depotKey != null) {
                 val decompressed = ByteArray(chunk.uncompressedLength)
                 DepotChunk.process(chunk, chunkBuffer, decompressed, depotKey)
-                decompressed
+                ByteBuffer.wrap(decompressed)
             } else {
-                chunkBuffer
+                ByteBuffer.wrap(chunkBuffer)
             }
 
-            // Write decompressed chunk at specific file offset using RandomAccessFile
-            RandomAccessFile(fileFinalPath.toResolvedFile(), "rw").use { randomAccessFile ->
-                randomAccessFile.seek(writeOffset)
-                randomAccessFile.write(decompressedChunkBuffer)
+            // Write decompressed chunk at specific file offset using FileChannel
+            FileChannel.open(
+                fileFinalPath.toResolvedFile().toPath(),
+                java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.StandardOpenOption.CREATE
+            ).use { channel ->
+                channel.position(writeOffset)
+                while (decompressedChunkBuffer.hasRemaining()) {
+                    channel.write(decompressedChunkBuffer)
+                }
             }
 
             // Clean up temporary chunk file immediately after processing
@@ -1906,30 +1842,27 @@ class DepotDownloader @JvmOverloads constructor(
                 logger?.debug("Failed to delete temporary chunk file $chunkTempPath: ${e.message}")
             }
 
+            logger?.debug("Finished chunk $chunkID for file ${file.fileName}")
+
             // File completed - update counters and notify
-            val totalCompressedBytes = chunk.compressedLength
-            val totalUncompressedBytes = chunk.uncompressedLength
+            val totalCompressedBytes = chunk.compressedLength.toLong()
+            val totalUncompressedBytes = chunk.uncompressedLength.toLong()
 
-            val sizeDownloaded = synchronized(depotDownloadCounter) {
-                depotDownloadCounter.sizeDownloaded += totalCompressedBytes
-                depotDownloadCounter.depotBytesCompressed += totalCompressedBytes
-                depotDownloadCounter.depotBytesUncompressed += totalUncompressedBytes
-                depotDownloadCounter.sizeDownloaded
-            }
+            val sizeDownloaded = depotDownloadCounter.sizeDownloaded.addAndGet(totalCompressedBytes)
+            val totalBytesCompressed = depotDownloadCounter.depotBytesCompressed.addAndGet(totalCompressedBytes)
+            val totalBytesUncompressed = depotDownloadCounter.depotBytesUncompressed.addAndGet(totalUncompressedBytes)
 
-            synchronized(downloadCounter) {
-                downloadCounter.totalBytesCompressed += totalCompressedBytes
-                downloadCounter.totalBytesUncompressed += totalUncompressedBytes
-            }
+            downloadCounter.totalBytesCompressed.addAndGet(totalCompressedBytes)
+            downloadCounter.totalBytesUncompressed.addAndGet(totalUncompressedBytes)
 
-            val depotPercentage = (sizeDownloaded.toFloat() / depotDownloadCounter.completeDownloadSize)
+            val depotPercentage = (sizeDownloaded.toFloat() / depotDownloadCounter.completeDownloadSize.get())
 
             notifyListeners { listener ->
                 listener.onChunkCompleted(
                     depotId = depot.depotId,
                     depotPercentComplete = depotPercentage,
-                    compressedBytes = downloadCounter.totalBytesCompressed,
-                    uncompressedBytes = downloadCounter.totalBytesUncompressed
+                    compressedBytes = totalBytesCompressed,
+                    uncompressedBytes = totalBytesUncompressed
                 )
             }
 
